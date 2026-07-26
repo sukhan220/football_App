@@ -1,0 +1,28 @@
+{
+  "name": "@football/engine",
+  "version": "1.0.0",
+  "description": "Framework-agnostic 3D Football Physics & Game Engine for Web and Mobile",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "npx tsx test-engine.ts",
+    "dev": "tsc --watch"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.0.0"
+  }
+}

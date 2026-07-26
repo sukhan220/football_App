@@ -8,6 +8,12 @@
       ],
       "@/assets/*": [
         "./assets/*"
+      ],
+      "@football/engine": [
+        "./engine/src/index.ts"
+      ],
+      "@football/engine/*": [
+        "./engine/src/core/*"
       ]
     }
   },
@@ -15,6 +21,7 @@
     "**/*.ts",
     "**/*.tsx",
     ".expo/types/**/*.ts",
-    "expo-env.d.ts"
+    "expo-env.d.ts",
+    "../engine/**/*.ts"
   ]
 }
