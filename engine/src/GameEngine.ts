@@ -1,4 +1,6 @@
-// packages/engine/src/GameEngine.ts
+
+
+// engine/src/GameEngine.ts
 import { PhysicsEngine } from './core/Physics';
 import { Ball } from './core/Ball';
 import { Goalkeeper } from './core/Player';
@@ -7,10 +9,12 @@ import { ReplaySystem } from './core/Replay';
 import { Vector3D } from './core/Vector3';
 import { InputParser, SwipeData } from './core/InputParser';
 import { EventSystem } from './core/EventSystem';
+import { CameraManager, CameraMode, CameraState } from './core/CameraManager'; // 📸 ক্যামেরা সিস্টেম ইমপোর্ট
 
 export type EngineCallback = (state: {
   ballPos: Vector3D;
   keeperPos: Vector3D;
+  cameraState: CameraState; // 📸 ক্যামেরার স্টেট সাবস্ক্রাইবারদের পাঠানো হবে
   score: number;
   shotsLeft: number;
   isGameOver: boolean;
@@ -22,13 +26,25 @@ export class GameEngine {
   public keeper = new Goalkeeper();
   public match = new MatchManager();
   public replay = new ReplaySystem();
-  public events = new EventSystem(); // 🚀 New Event System Integration
+  public events = new EventSystem();
+  public camera = new CameraManager('SHOOTER'); // 📸 ১. ক্যামেরা সিস্টেম ইন্টিগ্রেশন
 
   private subscribers: EngineCallback[] = [];
 
-  // ১. সরাসরি Swipe Data দিয়ে Kick করার জন্য প্রফেশনাল মেথড
+  /**
+   * ম্যানুয়ালি বা বাহ্যিক উৎস থেকে ক্যামেরা মোড পরিবর্তন করার জন্য
+   */
+  public setCameraMode(mode: CameraMode): void {
+    this.camera.setMode(mode);
+    this.events.emit('ON_CAMERA_CHANGE', { mode });
+  }
+
+  // ১. সরাসরি Swipe Data দিয়ে Kick করার জন্য প্রফেশনাল মেথড
   public kickWithSwipe(swipe: SwipeData): void {
     if (this.match.isGameOver) return;
+
+    // শট শুরু হওয়ার সাথে সাথে নিশ্চিতভাবে SHOOTER ক্যামেরা মোড চালু করা
+    this.setCameraMode('SHOOTER');
 
     // InputParser ব্যবহার করে ভেলোসিটি ও স্পিন বের করা
     const { velocity, spin } = InputParser.parseSwipe(swipe);
@@ -47,7 +63,7 @@ export class GameEngine {
     this.replay.clear();
   }
 
-  // ২. পুরনো মেথড ব্যাকওয়ার্ড কম্প্যাটিবিলিটির জন্য রাখা হলো
+  // ২. পুরনো মেথড ব্যাকওয়ার্ড কম্প্যাটিবিলিটির জন্য রাখা হলো
   public kick(deltaX: number, deltaY: number, duration: number): void {
     this.kickWithSwipe({
       startX: 0,
@@ -59,13 +75,19 @@ export class GameEngine {
   }
 
   public update(dt: number): void {
+    // 📸 ২. ক্যামেরার অ্যানিমেশন ও ম্যাথ আপডেট করা
+    const cameraState = this.camera.update(dt, this.ball.position);
+
     // 1. Replay Playback Mode
     if (this.replay.isPlaying) {
       const replayPos = this.replay.getNextFrame();
       if (replayPos) {
         this.ball.position = replayPos;
+      } else {
+        // রিপ্লে শেষ হলে সাধারণ ক্যামেরায় ফেরত
+        this.setCameraMode('SHOOTER');
       }
-      this.notify();
+      this.notify(cameraState);
       return;
     }
 
@@ -75,7 +97,7 @@ export class GameEngine {
       this.ball.position = nextPos;
       this.ball.velocity = nextVel;
 
-      // 🚀 Goalkeeper AI Update (Fixed Arguments Here)
+      // 🚀 Goalkeeper AI Update
       this.keeper.updateAI(this.ball.position, this.ball.velocity, dt);
       
       this.replay.record(this.ball.position);
@@ -94,28 +116,34 @@ export class GameEngine {
 
         if (this.match.isGameOver) {
           this.events.emit('ON_GAME_OVER', { finalScore: this.match.score });
+        } else {
+          // 📸 শট শেষ হলে অটোমেটিক রিপ্লে মোড চালু করে মুভিং ক্যামেরা শুরু করা
+          this.setCameraMode('REPLAY');
+          this.replay.start();
         }
       }
     }
 
-    this.notify();
+    this.notify(cameraState);
   }
 
   // 🔄 Reset Round for Next Shot
   public resetShot(): void {
     this.ball.reset();
     this.keeper.reset();
+    this.setCameraMode('SHOOTER'); // 📸 পরবর্তী শটের জন্য ক্যামেরা রিসেট
   }
 
   public subscribe(fn: EngineCallback): void {
     this.subscribers.push(fn);
   }
 
-  private notify(): void {
+  private notify(cameraState: CameraState): void {
     this.subscribers.forEach((fn) =>
       fn({
         ballPos: this.ball.position,
         keeperPos: this.keeper.position,
+        cameraState: cameraState, // 📸 ক্যানভাসে দেওয়ার জন্য প্রসেস করা ক্যামেরা ডাটা
         score: this.match.score,
         shotsLeft: this.match.shotsLeft,
         isGameOver: this.match.isGameOver

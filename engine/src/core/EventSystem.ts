@@ -4,7 +4,8 @@ export type GameEventType =
   | 'ON_SAVE' 
   | 'ON_POST_HIT' 
   | 'ON_MISS' 
-  | 'ON_GAME_OVER';
+  | 'ON_GAME_OVER'
+  | 'ON_CAMERA_CHANGE'; // 📸 ক্যামেরা চেঞ্জের ইভেন্ট যোগ করা হলো
 
 export type EventCallback = (data?: any) => void;
 
@@ -30,7 +31,7 @@ export class EventSystem {
     }
   }
 
-  // ইভেন্ট ট্রিগার করা
+  // ইভент ট্রিগার করা
   public emit(event: GameEventType, data?: any): void {
     const callbacks = this.listeners.get(event);
     if (callbacks) {
