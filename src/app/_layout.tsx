@@ -4,6 +4,8 @@ import { useColorScheme } from 'react-native';
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import AppTabs from '@/components/app-tabs';
+import { MultiplayerProvider } from '@/providers/MultiplayerProvider';
+
 
 SplashScreen.preventAutoHideAsync();
 
@@ -12,7 +14,10 @@ export default function TabLayout() {
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
       <AnimatedSplashOverlay />
-      <AppTabs />
+      <MultiplayerProvider>
+        <AppTabs />
+
+      </MultiplayerProvider>
     </ThemeProvider>
   );
 }

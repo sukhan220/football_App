@@ -32,11 +32,10 @@ export function TouchController({ currentRole, matchControlRef, children }: Touc
         const vx = gestureState.vx;
         const vy = gestureState.vy;
 
-        // 🧤 ১. প্লেয়ার যদি GOALKEEPER হয় -> ডাইভ অ্যাকশন
+        // 🧤 ১. GOALKEEPER Action
         if (currentRole === 'GOALKEEPER') {
           let direction: 'left' | 'right' | 'center' = 'center';
 
-          // এক্সপোজড ভেলোসিটি বা ডিসপ্লেসমেন্ট দিয়ে ডাইভ দিক নির্ধারণ
           if (dx < -40 || vx < -0.5) {
             direction = 'left';
           } else if (dx > 40 || vx > 0.5) {
@@ -44,23 +43,25 @@ export function TouchController({ currentRole, matchControlRef, children }: Touc
           }
 
           console.log(`🧤 Keeper Swipe Triggered: ${direction}`);
+          
+          // GameScene-এর মাধ্যমে ডাইভ অ্যাকশন রান হবে (যা ভেতরেই TCP-তে সেন্ড করে)
           matchControlRef.current.triggerKeeperDive(direction);
           return;
         }
 
-        // ⚽ ২. প্লেয়ার যদি SHOOTER হয় -> শর্ট / কিক অ্যাকশন
+        // ⚽ ২. SHOOTER Action
         if (currentRole === 'SHOOTER') {
-          // উপরের দিকে সোয়াইপ করলে (dy < -30)
           if (dy < -30) {
             const speedScale = Math.min(Math.abs(vy) * 12 + 10, 28);
 
             const flickData = {
               deltaX: dx,
               deltaY: dy,
+              deltaTime: timeDiff,
               velocity: {
                 x: (dx / (timeDiff || 1)) * 1.5,
                 y: Math.max(Math.abs(vy) * 8, 3.5),
-                z: -speedScale, // Z মাইনাস পোস্টের দিকে
+                z: -speedScale,
               },
               spin: {
                 x: 0,
@@ -70,6 +71,8 @@ export function TouchController({ currentRole, matchControlRef, children }: Touc
             };
 
             console.log('⚽ Shooter Kick Triggered:', flickData);
+            
+            // GameScene-এর মাধ্যমে কিক রান হবে (যা ভেতরেই TCP-তে সেন্ড করে)
             matchControlRef.current.kick(flickData);
           }
         }
@@ -87,6 +90,5 @@ export function TouchController({ currentRole, matchControlRef, children }: Touc
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    touchAction: 'none', // ক্যানভাস জেসচার লক ইন্টারসেপশন ফিক্স
   },
 });

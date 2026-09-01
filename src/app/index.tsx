@@ -1,7 +1,3 @@
-
-
-
-
 // src/app/index.tsx
 
 import { CameraMode, GameMode } from '@football/engine';
@@ -11,6 +7,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
   PanResponder,
+  Text,
+  TouchableOpacity,
   View,
 } from 'react-native';
 
@@ -112,6 +110,23 @@ export default function App() {
   }, [debugInfo]);
 
   // ============================================================
+  // BACK TO MAIN MENU HANDLER
+  // ============================================================
+
+  const handleBackToMenu = useCallback(() => {
+    console.log('[GAME] Returning to Main Menu');
+
+    if (network.isConnected()) {
+      network.disconnect().catch(() => {});
+    }
+
+    setGameStarted(false);
+    setShowGameOverModal(false);
+    setShowStartModal(true);
+    fadeAnim.setValue(0);
+  }, [fadeAnim]);
+
+  // ============================================================
   // START MENU
   // ============================================================
 
@@ -182,7 +197,7 @@ export default function App() {
       // Multiplayer mode
       setGameMode('VS_PLAYER');
 
-      // Toss থেকে পাওয়া final role
+      // Toss থেকে পাওয়া final role
       setUserRole(role);
 
       // দুই player ready
@@ -212,7 +227,7 @@ export default function App() {
       (data: any) => {
         console.log('[REMOTE MESSAGE]', data);
 
-        // GameScene / Match Controller তৈরি হওয়ার পরে
+        // GameScene / Match Controller তৈরি হওয়ার পরে
         // remote game action এখানে যাবে।
 
         if (
@@ -240,7 +255,7 @@ export default function App() {
    * Multiplayer-এর role প্রথমে userRole থেকে আসে।
    *
    * GameScene যদি debugInfo.isUserKeeper update করে,
-   * সেটাকেও priority দেওয়া হচ্ছে।
+   * সেটাকেও priority দেওয়া হচ্ছে।
    */
 
   const currentUserRole =
@@ -545,6 +560,38 @@ export default function App() {
           />
 
           {/* --------------------------------------------------
+              MINIMAL HOME/BACK BUTTON
+              -------------------------------------------------- */}
+
+          <TouchableOpacity
+            onPress={handleBackToMenu}
+            activeOpacity={0.7}
+            style={{
+              position: 'absolute',
+              top: 45,
+              left: 20,
+              zIndex: 99,
+              backgroundColor: 'rgba(0,0,0,0.4)',
+              paddingVertical: 6,
+              paddingHorizontal: 12,
+              borderRadius: 20,
+              borderWidth: 1,
+              borderColor: 'rgba(255,255,255,0.2)',
+            }}
+          >
+            <Text
+              style={{
+                color: '#FFFFFF',
+                fontSize: 12,
+                fontWeight: '600',
+                opacity: 0.8,
+              }}
+            >
+              ✕ Menu
+            </Text>
+          </TouchableOpacity>
+
+          {/* --------------------------------------------------
               GAME OVER
               -------------------------------------------------- */}
 
@@ -573,6 +620,35 @@ export default function App() {
               paddingHorizontal: 20,
             }}
           >
+            {/* Multiplayer Setup screen header back button */}
+            <TouchableOpacity
+              onPress={handleBackToMenu}
+              activeOpacity={0.7}
+              style={{
+                position: 'absolute',
+                top: 45,
+                left: 20,
+                zIndex: 99,
+                backgroundColor: 'rgba(0,0,0,0.4)',
+                paddingVertical: 6,
+                paddingHorizontal: 12,
+                borderRadius: 20,
+                borderWidth: 1,
+                borderColor: 'rgba(255,255,255,0.2)',
+              }}
+            >
+              <Text
+                style={{
+                  color: '#FFFFFF',
+                  fontSize: 12,
+                  fontWeight: '600',
+                  opacity: 0.8,
+                }}
+              >
+                ← Back
+              </Text>
+            </TouchableOpacity>
+
             <ModeSwitcher
               gameMode={gameMode}
               setGameMode={setGameMode}
