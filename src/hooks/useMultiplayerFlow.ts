@@ -94,7 +94,6 @@ export function useMultiplayerFlow({
   // ==========================================================
   // ROLE UPDATE
   // ==========================================================
-
   const updateRole = useCallback((role: PlayerRole) => {
     setSelectedRole(role);
     selectedRoleRef.current = role;
@@ -104,7 +103,6 @@ export function useMultiplayerFlow({
   // ==========================================================
   // RESET & CANCEL
   // ==========================================================
-
   const resetToIdle = useCallback((message = '') => {
     setFlowStep('IDLE');
     setSelectedRole(null);

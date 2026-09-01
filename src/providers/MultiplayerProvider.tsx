@@ -1,3 +1,5 @@
+
+
 // src/providers/MultiplayerProvider.tsx
 
 import React, {
@@ -14,12 +16,10 @@ import React, {
 import { GameMode } from '@football/engine';
 
 import { GAME_EVENTS } from '@/constants/network-events';
-
 import {
   network,
   NetworkManager,
 } from '@/services/tcp-manager';
-
 import { udpNetwork } from '@/services/udp-manager';
 
 // ============================================================
@@ -48,9 +48,8 @@ export interface RoomInfo {
   hostName?: string;
 }
 
-// ============================================================
-// CONTEXT TYPE
-// ============================================================
+type NetworkSubscriber =
+  (data: any) => void;
 
 interface MultiplayerContextValue {
   // ----------------------------------------------------------
@@ -58,6 +57,7 @@ interface MultiplayerContextValue {
   // ----------------------------------------------------------
 
   flowStep: FlowStep;
+
   setFlowStep: React.Dispatch<
     React.SetStateAction<FlowStep>
   >;
@@ -67,6 +67,7 @@ interface MultiplayerContextValue {
   // ----------------------------------------------------------
 
   hostIp: string;
+
   setHostIp: React.Dispatch<
     React.SetStateAction<string>
   >;
@@ -74,6 +75,7 @@ interface MultiplayerContextValue {
   myIp: string;
 
   availableRooms: RoomInfo[];
+
   setAvailableRooms: React.Dispatch<
     React.SetStateAction<RoomInfo[]>
   >;
@@ -81,6 +83,7 @@ interface MultiplayerContextValue {
   status: string;
 
   isConnected: boolean;
+
   isHost: boolean;
 
   // ----------------------------------------------------------
@@ -88,6 +91,7 @@ interface MultiplayerContextValue {
   // ----------------------------------------------------------
 
   isTossWinner: boolean;
+
   tossWinner: PlayerId | null;
 
   // ----------------------------------------------------------
@@ -101,6 +105,7 @@ interface MultiplayerContextValue {
   // ----------------------------------------------------------
 
   isMyReady: boolean;
+
   isOpponentReady: boolean;
 
   // ----------------------------------------------------------
@@ -134,12 +139,16 @@ interface MultiplayerContextValue {
   ) => void;
 
   // ----------------------------------------------------------
-  // NETWORK MESSAGE SUBSCRIBERS
+  // NETWORK BUS
   // ----------------------------------------------------------
 
   subscribe: (
-    callback: (data: any) => void
+    callback: NetworkSubscriber
   ) => () => void;
+
+  send: (
+    data: any
+  ) => boolean;
 
   // ----------------------------------------------------------
   // UDP
@@ -178,27 +187,10 @@ const MultiplayerContext =
 
 interface MultiplayerProviderProps {
   children: ReactNode;
-
-  /**
-   * Game mode setter lives in index.tsx.
-   */
-  setGameMode?: (
-    mode: GameMode
-  ) => void;
-
-  /**
-   * Called when both players are ready.
-   */
-  onMultiplayerReady?: (
-    isHost: boolean,
-    role: PlayerRole
-  ) => void;
 }
 
 export function MultiplayerProvider({
   children,
-  setGameMode,
-  onMultiplayerReady,
 }: MultiplayerProviderProps) {
   // ==========================================================
   // BASIC STATE
@@ -270,13 +262,15 @@ export function MultiplayerProvider({
     );
 
   // ==========================================================
-  // MESSAGE SUBSCRIBERS
+  // NETWORK SUBSCRIBERS
+  //
+  // One central bus.
+  //
+  // GameScene, index etc. subscribe এখানে।
   // ==========================================================
 
   const subscribersRef =
-    useRef<
-      Array<(data: any) => void>
-    >([]);
+    useRef<NetworkSubscriber[]>([]);
 
   // ==========================================================
   // PLAYER ID
@@ -290,7 +284,7 @@ export function MultiplayerProvider({
     }, []);
 
   // ==========================================================
-  // UPDATE NETWORK STATUS
+  // NETWORK STATE
   // ==========================================================
 
   const refreshNetworkState =
@@ -305,17 +299,20 @@ export function MultiplayerProvider({
     }, []);
 
   // ==========================================================
-  // RESET FLOW ONLY
+  // RESET FLOW
   //
   // IMPORTANT:
+  // এখানে TCP disconnect করা হবে না।
   //
-  // This does NOT disconnect TCP.
-  //
+  // কারণ PLAYING অবস্থায় flow reset হলে
+  // socket কাটা যাবে না।
   // ==========================================================
 
   const resetToIdle =
     useCallback(
-      (message = '') => {
+      (
+        message = ''
+      ) => {
         setFlowStep('IDLE');
 
         setSelectedRole(null);
@@ -344,15 +341,24 @@ export function MultiplayerProvider({
 
   const updateRole =
     useCallback(
-      (role: PlayerRole) => {
+      (
+        role: PlayerRole
+      ) => {
         setSelectedRole(role);
-        selectedRoleRef.current = role;
+
+        selectedRoleRef.current =
+          role;
+
+        console.log(
+          '🎭 My role:',
+          role
+        );
       },
       []
     );
 
   // ==========================================================
-  // INCOMING MESSAGE
+  // NETWORK MESSAGE HANDLER
   // ==========================================================
 
   const handleIncomingData =
@@ -370,26 +376,31 @@ export function MultiplayerProvider({
           data
         );
 
-        // ------------------------------------------------------
-        // GLOBAL SUBSCRIBERS
-        // ------------------------------------------------------
+        // ----------------------------------------------------
+        // SEND TO ALL SUBSCRIBERS
+        // ----------------------------------------------------
 
-        [
-          ...subscribersRef.current,
-        ].forEach(listener => {
-          try {
-            listener(data);
-          } catch (error) {
-            console.error(
-              'Multiplayer subscriber error:',
-              error
-            );
+        const listeners =
+          [
+            ...subscribersRef.current,
+          ];
+
+        listeners.forEach(
+          listener => {
+            try {
+              listener(data);
+            } catch (error) {
+              console.error(
+                '❌ Multiplayer subscriber error:',
+                error
+              );
+            }
           }
-        });
+        );
 
-        // ------------------------------------------------------
+        // ----------------------------------------------------
         // ROOM CANCELLED
-        // ------------------------------------------------------
+        // ----------------------------------------------------
 
         if (
           data.type ===
@@ -399,11 +410,13 @@ export function MultiplayerProvider({
             '🚪 Remote player cancelled room'
           );
 
-          udpNetwork.closeUDP();
+          try {
+            udpNetwork.closeUDP();
+          } catch {}
 
           network
             .disconnect()
-            .catch(() => { });
+            .catch(() => {});
 
           refreshNetworkState();
 
@@ -414,9 +427,9 @@ export function MultiplayerProvider({
           return;
         }
 
-        // ------------------------------------------------------
+        // ----------------------------------------------------
         // TOSS RESULT
-        // ------------------------------------------------------
+        // ----------------------------------------------------
 
         if (
           data.type ===
@@ -429,11 +442,6 @@ export function MultiplayerProvider({
             winnerId !== 'HOST' &&
             winnerId !== 'CLIENT'
           ) {
-            console.warn(
-              'Invalid toss winner:',
-              data
-            );
-
             return;
           }
 
@@ -478,9 +486,9 @@ export function MultiplayerProvider({
           return;
         }
 
-        // ------------------------------------------------------
+        // ----------------------------------------------------
         // ROLE SELECTED
-        // ------------------------------------------------------
+        // ----------------------------------------------------
 
         if (
           data.type ===
@@ -496,41 +504,34 @@ export function MultiplayerProvider({
             winnerId !== 'HOST' &&
             winnerId !== 'CLIENT'
           ) {
-            console.warn(
-              'Invalid ROLE_SELECTED winnerId:',
-              data
-            );
-
             return;
           }
 
           if (
             winnerSelectedRole !==
-            'SHOOTER' &&
+              'SHOOTER' &&
             winnerSelectedRole !==
-            'GOALKEEPER'
+              'GOALKEEPER'
           ) {
-            console.warn(
-              'Invalid selected role:',
-              data
-            );
-
             return;
           }
 
           const myPlayerId =
             getMyPlayerId();
 
-          const opponentRole =
+          const opponentRole: PlayerRole =
             winnerSelectedRole ===
-              'SHOOTER'
+            'SHOOTER'
               ? 'GOALKEEPER'
               : 'SHOOTER';
 
-          const myAssignedRole =
+          const myAssignedRole: PlayerRole =
             myPlayerId === winnerId
               ? winnerSelectedRole
               : opponentRole;
+
+          const amIWinner =
+            myPlayerId === winnerId;
 
           setTossWinner(
             winnerId
@@ -540,15 +541,18 @@ export function MultiplayerProvider({
             winnerId;
 
           setIsTossWinner(
-            myPlayerId === winnerId
+            amIWinner
           );
 
           isTossWinnerRef.current =
-            myPlayerId === winnerId;
+            amIWinner;
 
           updateRole(
             myAssignedRole
           );
+
+          setIsMyReady(false);
+          setIsOpponentReady(false);
 
           setFlowStep(
             'READY_CHECK'
@@ -556,7 +560,7 @@ export function MultiplayerProvider({
 
           setStatus(
             myAssignedRole ===
-              'SHOOTER'
+            'SHOOTER'
               ? '🎯 আপনার ভূমিকা: SHOOTER'
               : '🧤 আপনার ভূমিকা: GOALKEEPER'
           );
@@ -564,9 +568,9 @@ export function MultiplayerProvider({
           return;
         }
 
-        // ------------------------------------------------------
+        // ----------------------------------------------------
         // PLAYER READY
-        // ------------------------------------------------------
+        // ----------------------------------------------------
 
         if (
           data.type ===
@@ -583,14 +587,18 @@ export function MultiplayerProvider({
           return;
         }
 
-        // ------------------------------------------------------
+        // ----------------------------------------------------
         // GAME START
-        // ------------------------------------------------------
+        // ----------------------------------------------------
 
         if (
           data.type ===
           GAME_EVENTS.GAME_START
         ) {
+          console.log(
+            '🎮 GAME_START received'
+          );
+
           if (
             selectedRoleRef.current
           ) {
@@ -611,133 +619,135 @@ export function MultiplayerProvider({
     );
 
   // ==========================================================
-  // START GAMEPLAY
+  // GLOBAL TCP LISTENER
   //
-  // IMPORTANT:
-  //
-  // No disconnect here.
-  //
+  // Provider mounted থাকা পর্যন্ত listener থাকবে।
   // ==========================================================
 
-  const startGameplay =
-    useCallback(
-      (role: PlayerRole) => {
-        setFlowStep('PLAYING');
+  useEffect(() => {
+    const unsubscribe =
+      network.onMessage(
+        handleIncomingData
+      );
 
-        setStatus(
-          '🎮 গেম শুরু হচ্ছে!'
-        );
+    return () => {
+      if (
+        typeof unsubscribe ===
+        'function'
+      ) {
+        unsubscribe();
+      }
 
-        setGameMode?.(
-          'VS_PLAYER' as GameMode
+      // IMPORTANT:
+      // এখানে network.disconnect()
+      // করা যাবে না।
+      //
+      // Provider unmount না হওয়া পর্যন্ত
+      // network alive থাকবে।
+    };
+  }, [
+    handleIncomingData,
+  ]);
+
+  // ==========================================================
+  // DISCONNECT CALLBACK
+  // ==========================================================
+
+  useEffect(() => {
+    network.setOnDisconnect(
+      () => {
+        console.log(
+          '🔴 Multiplayer disconnected'
         );
 
         refreshNetworkState();
 
-        if (onMultiplayerReady) {
-          onMultiplayerReady(
-            network.isRunningAsHost(),
-            role
-          );
-        }
-      },
-      [
-        onMultiplayerReady,
-        refreshNetworkState,
-        setGameMode,
-      ]
-    );
-
-  // ==========================================================
-  // SUBSCRIBE
-  // ==========================================================
-
-  const subscribe =
-    useCallback(
-      (
-        callback: (data: any) => void
-      ) => {
-        subscribersRef.current.push(
-          callback
+        resetToIdle(
+          '⚠️ প্রতিপক্ষ ডিসকানেক্ট করেছে!'
         );
-
-        return () => {
-          subscribersRef.current =
-            subscribersRef.current.filter(
-              cb => cb !== callback
-            );
-        };
-      },
-      []
+      }
     );
+
+    return () => {
+      // Do NOT disconnect here.
+      network.setOnDisconnect(
+        null
+      );
+    };
+  }, [
+    refreshNetworkState,
+    resetToIdle,
+  ]);
 
   // ==========================================================
   // HOST
   // ==========================================================
 
   const handleHost =
-    useCallback(async () => {
-      try {
-        const ip =
-          await NetworkManager.getLocalIP();
+    useCallback(
+      async () => {
+        try {
+          console.log(
+            '🟡 Starting TCP host...'
+          );
 
-        setMyIp(ip);
+          const ip =
+            await NetworkManager.getLocalIP();
 
-        setStatus(
-          `Hosting...\nIP: ${ip}\nWaiting for Player 2...`
-        );
+          setMyIp(ip);
 
-        setFlowStep(
-          'CONNECTING'
-        );
+          setStatus(
+            `Hosting...\nIP: ${ip}\nWaiting for Player 2...`
+          );
 
-        await network.startHost(
-          () => {
-            console.log(
-              '🟢 Player 2 connected'
-            );
+          setFlowStep(
+            'CONNECTING'
+          );
 
-            setConnectedState(
-              true
-            );
+          await network.startHost(
+            () => {
+              console.log(
+                '🟢 Player 2 connected'
+              );
 
-            setHostState(
-              true
-            );
+              refreshNetworkState();
 
-            // Start UDP receiver.
-            udpNetwork.initUDP();
+              setStatus(
+                '🟢 Player 2 Connected!\n🪙 Toss শুরু করুন...'
+              );
 
-            setStatus(
-              '🟢 Player 2 Connected!\n🪙 Toss শুরু করুন...'
-            );
+              setFlowStep(
+                'WAITING_FOR_TOSS'
+              );
+            },
+            handleIncomingData
+          );
 
-            setFlowStep(
-              'WAITING_FOR_TOSS'
-            );
-          },
-          handleIncomingData
-        );
+          refreshNetworkState();
 
-        refreshNetworkState();
-      } catch (error) {
-        console.error(
-          '❌ Host error:',
-          error
-        );
+          console.log(
+            '🟢 TCP HOST STARTED'
+          );
+        } catch (error) {
+          console.error(
+            '❌ Host error:',
+            error
+          );
 
-        setStatus(
-          '❌ Failed to start Host'
-        );
+          setStatus(
+            '❌ Failed to start Host'
+          );
 
-        setFlowStep('IDLE');
-
-        refreshNetworkState();
-      }
-    }, [
-      handleIncomingData,
-      refreshNetworkState,
-    ]);
+          setFlowStep(
+            'IDLE'
+          );
+        }
+      },
+      [
+        handleIncomingData,
+        refreshNetworkState,
+      ]
+    );
 
   // ==========================================================
   // CONNECT TO HOST
@@ -760,6 +770,15 @@ export function MultiplayerProvider({
         }
 
         try {
+          console.log(
+            '🟡 Connecting to:',
+            cleanIp
+          );
+
+          setHostIp(
+            cleanIp
+          );
+
           setStatus(
             '🔄 Connecting to Host...'
           );
@@ -775,21 +794,7 @@ export function MultiplayerProvider({
                 '🟢 Connected to Host'
               );
 
-              setConnectedState(
-                true
-              );
-
-              setHostState(
-                false
-              );
-
-              // Start UDP receiver.
-              udpNetwork.initUDP();
-
-              // UDP target is the host.
-              udpNetwork.setTargetIp(
-                cleanIp
-              );
+              refreshNetworkState();
 
               setStatus(
                 '🟢 Host-এর সাথে কানেক্টেড!\n🪙 Toss-এর জন্য অপেক্ষা করুন...'
@@ -803,6 +808,10 @@ export function MultiplayerProvider({
           );
 
           refreshNetworkState();
+
+          console.log(
+            '🟢 TCP CLIENT CONNECTED'
+          );
         } catch (error) {
           console.error(
             '❌ Join error:',
@@ -816,8 +825,6 @@ export function MultiplayerProvider({
           setFlowStep(
             'IDLE'
           );
-
-          refreshNetworkState();
         }
       },
       [
@@ -832,8 +839,8 @@ export function MultiplayerProvider({
 
   const handleJoin =
     useCallback(
-      async () => {
-        await connectToIp(
+      () => {
+        return connectToIp(
           hostIp
         );
       },
@@ -860,7 +867,9 @@ export function MultiplayerProvider({
           targetIp
         );
       },
-      [connectToIp]
+      [
+        connectToIp,
+      ]
     );
 
   // ==========================================================
@@ -872,10 +881,6 @@ export function MultiplayerProvider({
       if (
         !network.isRunningAsHost()
       ) {
-        console.warn(
-          'Only Host can perform toss'
-        );
-
         return;
       }
 
@@ -883,7 +888,7 @@ export function MultiplayerProvider({
         !network.isConnected()
       ) {
         setStatus(
-          '⚠️ Player 2 এখনো connected নয়।'
+          '⚠️ Player 2 এখনো connected নয়।'
         );
 
         return;
@@ -894,30 +899,16 @@ export function MultiplayerProvider({
           ? 'HOST'
           : 'CLIENT';
 
-      const sent =
-        network.send({
-          type:
-            GAME_EVENTS.TOSS_RESULT,
-          winnerId,
-        });
-
-      if (!sent) {
-        setStatus(
-          '❌ Toss পাঠানো যায়নি। TCP connection নেই।'
-        );
-
-        return;
-      }
-
-      const amIWinner =
-        winnerId === 'HOST';
-
       setTossWinner(
         winnerId
       );
 
       tossWinnerRef.current =
         winnerId;
+
+      const amIWinner =
+        winnerId ===
+        getMyPlayerId();
 
       setIsTossWinner(
         amIWinner
@@ -926,24 +917,22 @@ export function MultiplayerProvider({
       isTossWinnerRef.current =
         amIWinner;
 
-      if (amIWinner) {
-        setFlowStep(
-          'TOSS_DECISION'
-        );
+      network.send({
+        type:
+          GAME_EVENTS.TOSS_RESULT,
+        winnerId,
+      } as any);
 
-        setStatus(
-          '🎉 আপনি টসে জিতেছেন! Shooter অথবা Goalkeeper নির্বাচন করুন।'
-        );
-      } else {
-        setFlowStep(
-          'WAITING_FOR_ROLE'
-        );
-
-        setStatus(
-          '🪙 Player 2 টসে জিতেছে। তার role selection-এর জন্য অপেক্ষা করুন...'
-        );
-      }
-    }, []);
+      // Local host-এর জন্যও একই event process
+      handleIncomingData({
+        type:
+          GAME_EVENTS.TOSS_RESULT,
+        winnerId,
+      });
+    }, [
+      getMyPlayerId,
+      handleIncomingData,
+    ]);
 
   // ==========================================================
   // ROLE SELECT
@@ -951,60 +940,32 @@ export function MultiplayerProvider({
 
   const handleSelectRole =
     useCallback(
-      (role: PlayerRole) => {
-        const myPlayerId =
-          getMyPlayerId();
-
-        const currentWinner =
-          tossWinnerRef.current;
-
-        if (!currentWinner) {
-          setStatus(
-            '⚠️ আগে Toss সম্পন্ন করুন।'
-          );
-
-          return;
-        }
-
+      (
+        role: PlayerRole
+      ) => {
         if (
-          currentWinner !==
-          myPlayerId
+          !isTossWinnerRef.current
         ) {
-          setStatus(
-            '⚠️ শুধুমাত্র টসে বিজয়ী Player role নির্বাচন করতে পারবে।'
-          );
-
           return;
         }
 
         if (
           !network.isConnected()
         ) {
-          setStatus(
-            '❌ TCP connection নেই।'
-          );
-
           return;
         }
 
-        const winnerRole =
-          role;
+        const myPlayerId =
+          getMyPlayerId();
 
-        const opponentRole =
+        const opponentRole: PlayerRole =
           role === 'SHOOTER'
             ? 'GOALKEEPER'
             : 'SHOOTER';
 
         updateRole(
-          winnerRole
+          role
         );
-
-        setIsTossWinner(
-          true
-        );
-
-        isTossWinnerRef.current =
-          true;
 
         const message = {
           type:
@@ -1014,40 +975,60 @@ export function MultiplayerProvider({
             myPlayerId,
 
           selectedRole:
-            winnerRole,
+            role,
 
           hostRole:
             myPlayerId === 'HOST'
-              ? winnerRole
+              ? role
               : opponentRole,
 
           clientRole:
             myPlayerId === 'CLIENT'
-              ? winnerRole
+              ? role
               : opponentRole,
         };
 
-        const sent =
-          network.send(
-            message as any
-          );
+        network.send(
+          message as any
+        );
 
-        if (!sent) {
-          setStatus('❌ Role পাঠানো যায়নি। TCP connection নেই।');
-
-          return;
-        }
-
-        setFlowStep('READY_CHECK');
-
-        setStatus(
-          winnerRole === 'SHOOTER'
-            ? '🎯 আপনি SHOOTER। Ready চাপুন।'
-            : '🧤 আপনি GOALKEEPER। Ready চাপুন।'
+        // Local state
+        handleIncomingData(
+          message
         );
       },
       [
         getMyPlayerId,
+        handleIncomingData,
+        updateRole,
+      ]
+    );
+
+  // ==========================================================
+  // START GAMEPLAY
+  // ==========================================================
+
+  const startGameplay =
+    useCallback(
+      (
+        role: PlayerRole
+      ) => {
+        updateRole(
+          role
+        );
+
+        setFlowStep(
+          'PLAYING'
+        );
+
+        setStatus(
+          '🎮 গেম শুরু হচ্ছে!'
+        );
+
+        refreshNetworkState();
+      },
+      [
+        refreshNetworkState,
         updateRole,
       ]
     );
@@ -1058,11 +1039,12 @@ export function MultiplayerProvider({
 
   const handleReady =
     useCallback(() => {
-      const role =
-        selectedRoleRef.current;
-
-      if (!role) {
-        setStatus('⚠️ Role এখনো সেট হয়নি।');
+      if (
+        !selectedRoleRef.current
+      ) {
+        setStatus(
+          '⚠️ Role এখনো সেট হয়নি।'
+        );
 
         return;
       }
@@ -1071,35 +1053,40 @@ export function MultiplayerProvider({
         return;
       }
 
-      if (!network.isConnected() ) {
-        setStatus('❌ TCP connection নেই। Ready পাঠানো যাচ্ছে না।');
+      if (
+        !network.isConnected()
+      ) {
+        setStatus(
+          '⚠️ Multiplayer connection নেই।'
+        );
 
         return;
       }
 
-      setIsMyReady(true);
+      setIsMyReady(
+        true
+      );
 
-      const sent =
-        network.send({
-          type:
-            GAME_EVENTS.PLAYER_READY,
-        } as any);
-
-      if (!sent) {
-        setIsMyReady(false);
-
-        setStatus('❌ Ready পাঠানো যায়নি। TCP connection নেই।');
-
-        return;
-      }
-
-      console.log('✅ Local player ready');
+      network.send({
+        type:
+          GAME_EVENTS.PLAYER_READY,
+      } as any);
 
       if (
-        isOpponentReady
+        isOpponentReady &&
+        selectedRoleRef.current
       ) {
+        if (
+          network.isRunningAsHost()
+        ) {
+          network.send({
+            type:
+              GAME_EVENTS.GAME_START,
+          } as any);
+        }
+
         startGameplay(
-          role
+          selectedRoleRef.current
         );
       }
     }, [
@@ -1109,18 +1096,35 @@ export function MultiplayerProvider({
     ]);
 
   // ==========================================================
-  // BOTH READY WATCHER
+  // BOTH READY
   // ==========================================================
 
   useEffect(() => {
     if (
-      isMyReady &&
-      isOpponentReady &&
-      selectedRoleRef.current &&
-      flowStep ==='READY_CHECK'
+      !isMyReady ||
+      !isOpponentReady ||
+      !selectedRoleRef.current ||
+      flowStep !== 'READY_CHECK'
     ) {
-      startGameplay(selectedRoleRef.current);
+      return;
     }
+
+    console.log(
+      '🚀 BOTH PLAYERS READY'
+    );
+
+    if (
+      network.isRunningAsHost()
+    ) {
+      network.send({
+        type:
+          GAME_EVENTS.GAME_START,
+      } as any);
+    }
+
+    startGameplay(
+      selectedRoleRef.current
+    );
   }, [
     isMyReady,
     isOpponentReady,
@@ -1129,35 +1133,44 @@ export function MultiplayerProvider({
   ]);
 
   // ==========================================================
-  // TCP DISCONNECT LISTENER
-  //
-  // IMPORTANT:
-  //
-  // Provider unmount হলে disconnect নয়।
-  //
+  // SUBSCRIBE
   // ==========================================================
 
-  useEffect(() => {
-    network.setOnDisconnect(
-      () => {
-        console.log('🔴 Multiplayer disconnected');
+  const subscribe =
+    useCallback(
+      (
+        callback: NetworkSubscriber
+      ) => {
+        subscribersRef.current.push(
+          callback
+        );
 
-        setConnectedState(false);
-        setHostState(false);
-        udpNetwork.closeUDP();
-        resetToIdle('⚠️ প্রতিপক্ষ ডিসকানেক্ট করেছে! রুম বাতিল করা হলো।');
-      }
+        return () => {
+          subscribersRef.current =
+            subscribersRef.current.filter(
+              item =>
+                item !== callback
+            );
+        };
+      },
+      []
     );
 
-    return () => {
-      // DO NOT disconnect here.
-      network.setOnDisconnect(
-        null
-      );
-    };
-  }, [
-    resetToIdle,
-  ]);
+  // ==========================================================
+  // SEND
+  // ==========================================================
+
+  const send =
+    useCallback(
+      (
+        data: any
+      ) => {
+        return network.send(
+          data
+        );
+      },
+      []
+    );
 
   // ==========================================================
   // UDP INIT
@@ -1204,24 +1217,21 @@ export function MultiplayerProvider({
 
   // ==========================================================
   // CANCEL ROOM
-  //
-  // Explicit disconnect is allowed here.
-  //
   // ==========================================================
 
   const cancelRoom =
-    useCallback(async () => {
-      try {
-        if (
-          network.isConnected()
-        ) {
-          try {
-            network.send({
-              type:
-                'ROOM_CANCELLED',
-            } as any);
-          } catch (error) {
-            console.warn('Failed to send ROOM_CANCELLED:',error);
+    useCallback(
+      async () => {
+        try {
+          if (
+            network.isConnected()
+          ) {
+            try {
+              network.send({
+                type:
+                  'ROOM_CANCELLED',
+              } as any);
+            } catch {}
           }
 
           await new Promise<void>(
@@ -1231,29 +1241,30 @@ export function MultiplayerProvider({
                 100
               )
           );
+        } finally {
+          try {
+            udpNetwork.closeUDP();
+          } catch {}
+
+          try {
+            await network.disconnect();
+          } catch {}
+
+          refreshNetworkState();
+
+          resetToIdle(
+            'রুম বাতিল করা হয়েছে।'
+          );
         }
-      } finally {
-        try {
-          udpNetwork.closeUDP();
-        } catch { }
-
-        try {
-          await network.disconnect();
-        } catch (error) {
-          console.warn('Disconnect error:', error);
-        }
-
-        setConnectedState(false);
-        setHostState(false);
-
-        resetToIdle('রুম বাতিল করা হয়েছে।');
-      }
-    }, [
-      resetToIdle,
-    ]);
+      },
+      [
+        refreshNetworkState,
+        resetToIdle,
+      ]
+    );
 
   // ==========================================================
-  // PROVIDER VALUE
+  // CONTEXT VALUE
   // ==========================================================
 
   const value =
@@ -1291,16 +1302,15 @@ export function MultiplayerProvider({
         handleHost,
         handleJoin,
         handleAutoJoin,
-
         handleToss,
         handleSelectRole,
         handleReady,
-
         cancelRoom,
 
         startGameplay,
 
         subscribe,
+        send,
 
         initUDP,
         startUDPSync,
@@ -1330,16 +1340,13 @@ export function MultiplayerProvider({
         cancelRoom,
         startGameplay,
         subscribe,
+        send,
         initUDP,
         startUDPSync,
         stopUDPSync,
         resetToIdle,
       ]
     );
-
-  // ==========================================================
-  // RENDER
-  // ==========================================================
 
   return (
     <MultiplayerContext.Provider

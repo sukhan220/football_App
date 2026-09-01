@@ -1,27 +1,17 @@
 
 
-
 // src/components/game/GameScene.tsx
 
 import {
   Ball,
   CameraManager,
   CameraMode,
-  FieldPlayer,
   GameMode,
   Goalkeeper,
   MatchManager,
 } from '@football/engine';
-
 import { useFrame, useThree } from '@react-three/fiber/native';
-
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from 'react';
-
+import { useCallback, useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 
 import {
@@ -32,7 +22,7 @@ import {
   POST_RADIUS,
 } from '@/constants/football';
 
-import { tcpNetwork } from '@/services/tcp-manager';
+import { network, tcpNetwork } from '@/services/tcp-manager';
 import { udpNetwork } from '@/services/udp-manager';
 
 import { FootballMesh } from './football-mesh';
@@ -40,7 +30,6 @@ import { FootballPitch } from './football-pitch';
 import { GoalPost } from './goal-post';
 import { GoalkeeperMesh } from './goalKeeper-mesh';
 import { PlayerMesh } from './player-mesh';
-import { network } from '@/services/tcp-manager';
 
 type PlayerRole = 'SHOOTER' | 'GOALKEEPER';
 
@@ -63,40 +52,23 @@ export function GameScene({
 }: GameSceneProps) {
   const { camera } = useThree();
 
+  // 1. ENGINE & MESH REFS
   const ballMeshRef = useRef<THREE.Mesh>(null!);
-
-  const ballEngineRef = useRef(
-    new Ball(
-      {
-        x: 0,
-        y: 0.2,
-        z: 0,
-      },
-      0.2
-    )
-  );
-
+  const ballEngineRef = useRef(new Ball({ x: 0, y: 0.2, z: 0 }, 0.2));
   const keeperEngineRef = useRef(new Goalkeeper());
   const matchManagerRef = useRef(new MatchManager(gameMode, 5));
+  const cameraManagerRef = useRef<CameraManager>(new CameraManager('SHOOTER'));
 
-  const aiShooterRef = useRef(
-    new FieldPlayer('ai_shooter', {
-      x: -0.9,
-      y: 0,
-      z: 2.8,
-    })
-  );
-
+  // Network Sync Refs
   const lastUdpSendTime = useRef<number>(0);
   const currentTick = useRef<number>(0);
+  const pendingFlickData = useRef<any>(null);
 
+  // 2. ROLE & STATE CONTROL
   const [currentRole, setCurrentRole] = useState<PlayerRole>(
     initialUserRole || 'SHOOTER'
   );
-
-  const currentRoleRef = useRef<PlayerRole>(
-    initialUserRole || 'SHOOTER'
-  );
+  const currentRoleRef = useRef<PlayerRole>(initialUserRole || 'SHOOTER');
 
   const updateRole = useCallback((newRole: PlayerRole) => {
     currentRoleRef.current = newRole;
@@ -104,48 +76,30 @@ export function GameScene({
   }, []);
 
   useEffect(() => {
-    if (initialUserRole) {
-      updateRole(initialUserRole);
-    }
+    if (initialUserRole) updateRole(initialUserRole);
   }, [initialUserRole, updateRole]);
 
-  const pendingFlickData = useRef<any>(null);
-
-  const isApproachingRef = useRef(false);
   const [isApproaching, setIsApproachingState] = useState(false);
-
-  const setIsApproaching = useCallback((value: boolean) => {
-    isApproachingRef.current = value;
-    setIsApproachingState(value);
+  const isApproachingRef = useRef(false);
+  const setIsApproaching = useCallback((val: boolean) => {
+    isApproachingRef.current = val;
+    setIsApproachingState(val);
   }, []);
 
-  const aiShotTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const stateRef = useRef<{
-    isKicked: boolean;
-    isSaved: boolean;
-    isGoal: boolean;
-    shotFinished: boolean;
-    autoResetTimer: ReturnType<typeof setTimeout> | null;
-  }>({
+  const stateRef = useRef({
     isKicked: false,
     isSaved: false,
     isGoal: false,
     shotFinished: false,
-    autoResetTimer: null,
+    autoResetTimer: null as ReturnType<typeof setTimeout> | null,
   });
 
   const goalkeeperEngine = keeperEngineRef.current;
   const ball = ballEngineRef.current;
   const matchManager = matchManagerRef.current;
 
-  const cameraManagerRef = useRef<CameraManager>(
-    new CameraManager('SHOOTER')
-  );
-
+  // 3. SCOREBOARD SYNC
   const syncScoreboard = useCallback(() => {
-    const isUserKeeper = currentRoleRef.current === 'GOALKEEPER';
-
     setDebugInfo({
       isKicked: stateRef.current.isKicked,
       currentShooter: matchManager.currentShooter,
@@ -155,25 +109,17 @@ export function GameScene({
       p2Shots: [...(matchManager.p2History || [])],
       isGameOver: matchManager.isGameOver,
       winner: matchManager.winner,
-      isSuddenDeath: matchManager.isSuddenDeath,
-      isUserKeeper,
+      isUserKeeper: currentRoleRef.current === 'GOALKEEPER',
       currentRole: currentRoleRef.current,
     });
   }, [matchManager, setDebugInfo]);
 
+  // 4. CAMERA SETUP
   useEffect(() => {
     let targetCameraMode = activeCameraMode;
-
     if (currentRole === 'GOALKEEPER') {
       targetCameraMode = 'KEEPER';
-    } else {
-      if (activeCameraMode === ('KEEPER_VIEW' as CameraMode)) {
-        targetCameraMode = 'SHOOTER';
-      } else {
-        targetCameraMode = activeCameraMode;
-      }
     }
-
     cameraManagerRef.current.setMode(targetCameraMode);
   }, [activeCameraMode, currentRole]);
 
@@ -205,87 +151,47 @@ export function GameScene({
     },
   };
 
-  const triggerAIShotIfNeeded = useCallback(() => {
-    if ((gameMode as string) === 'VS_PLAYER' || matchManager.isGameOver) {
-      return;
-    }
+  // 5. TURN RESET LOGIC
+  const resetNextTurn = useCallback(
+    (explicitNextRole?: PlayerRole) => {
+      if (stateRef.current.autoResetTimer) {
+        clearTimeout(stateRef.current.autoResetTimer);
+        stateRef.current.autoResetTimer = null;
+      }
 
-    const isAIShooter =
-      matchManager.currentShooter === 'AI' ||
-      (gameMode as string) === 'GOALKEEPER';
+      ball.reset();
+      goalkeeperEngine.reset();
+      goalkeeperEngine.position.z = GOAL_Z + 0.2;
 
-    if (
-      !isAIShooter ||
-      stateRef.current.isKicked ||
-      isApproachingRef.current
-    ) {
-      return;
-    }
+      stateRef.current.isKicked = false;
+      stateRef.current.isSaved = false;
+      stateRef.current.isGoal = false;
+      stateRef.current.shotFinished = false;
 
-    if (aiShotTimer.current) clearTimeout(aiShotTimer.current);
+      setIsApproaching(false);
+      pendingFlickData.current = null;
+      currentTick.current = 0;
 
-    aiShotTimer.current = setTimeout(() => {
-      if (stateRef.current.isKicked || isApproachingRef.current) return;
+      if (ballMeshRef.current) {
+        ballMeshRef.current.position.set(ball.position.x, ball.position.y, ball.position.z);
+        ballMeshRef.current.rotation.set(0, 0, 0);
+      }
 
-      const aiShot = aiShooterRef.current.generateAIShot();
-      if (!aiShot) return;
+      if (explicitNextRole) {
+        updateRole(explicitNextRole);
+      } else if ((gameMode as string) === 'VS_PLAYER') {
+        const nextRole = currentRoleRef.current === 'SHOOTER' ? 'GOALKEEPER' : 'SHOOTER';
+        updateRole(nextRole);
+      }
 
-      pendingFlickData.current = aiShot;
-      setIsApproaching(true);
-    }, 2500);
-  }, [gameMode, matchManager, setIsApproaching]);
+      syncScoreboard();
+    },
+    [ball, gameMode, goalkeeperEngine, setIsApproaching, syncScoreboard, updateRole]
+  );
 
-  const resetNextTurn = useCallback(() => {
-    if (stateRef.current.autoResetTimer) {
-      clearTimeout(stateRef.current.autoResetTimer);
-      stateRef.current.autoResetTimer = null;
-    }
-
-    if (aiShotTimer.current) {
-      clearTimeout(aiShotTimer.current);
-      aiShotTimer.current = null;
-    }
-
-    ball.reset();
-    goalkeeperEngine.reset();
-    goalkeeperEngine.position.z = GOAL_Z + 0.2;
-
-    stateRef.current.isKicked = false;
-    stateRef.current.isSaved = false;
-    stateRef.current.isGoal = false;
-    stateRef.current.shotFinished = false;
-
-    setIsApproaching(false);
-    pendingFlickData.current = null;
-    currentTick.current = 0;
-
-    if (ballMeshRef.current) {
-      ballMeshRef.current.position.set(
-        ball.position.x,
-        ball.position.y,
-        ball.position.z
-      );
-      ballMeshRef.current.rotation.set(0, 0, 0);
-    }
-
-    if ((gameMode as string) === 'VS_PLAYER') {
-      const nextRole =
-        currentRoleRef.current === 'SHOOTER' ? 'GOALKEEPER' : 'SHOOTER';
-      updateRole(nextRole);
-    }
-
-    syncScoreboard();
-  }, [ball, gameMode, goalkeeperEngine, setIsApproaching, syncScoreboard, updateRole]);
-
-  useEffect(() => {
-    matchManager.setGameMode(gameMode, 5);
-    resetNextTurn();
-    triggerAIShotIfNeeded();
-  }, [gameMode, matchManager, resetNextTurn, triggerAIShotIfNeeded]);
-
+  // 6. ACTION HANDLERS (KICK & MANUAL DIVE ONLY)
   const handleKickHit = useCallback(() => {
     if (!pendingFlickData.current) return;
-
     const raw = pendingFlickData.current;
 
     if (raw.deltaX !== undefined && raw.deltaY !== undefined) {
@@ -293,28 +199,17 @@ export function GameScene({
     } else if (raw.velocity) {
       let velZ = raw.velocity.z;
       if (velZ > 0) velZ = -velZ;
-
       ball.applyKick(
         { x: raw.velocity.x, y: raw.velocity.y, z: velZ },
         raw.spin || { x: 0, y: 0, z: 0 }
       );
     }
 
-    if (
-      (gameMode as string) !== 'VS_PLAYER' &&
-      currentRoleRef.current !== 'GOALKEEPER'
-    ) {
-      goalkeeperEngine.predictShot({
-        ballPos: ball.position,
-        ballVel: ball.velocity,
-        ballSpin: ball.spin,
-      });
-    }
-
+    // AI Prediction removed: Goalkeeper moves ONLY when manualDive is explicitly called.
     stateRef.current.isKicked = true;
     setIsApproaching(false);
     syncScoreboard();
-  }, [ball, gameMode, goalkeeperEngine, setIsApproaching, syncScoreboard]);
+  }, [ball, setIsApproaching, syncScoreboard]);
 
   const handleRemoteAction = useCallback(
     (data: any) => {
@@ -326,15 +221,18 @@ export function GameScene({
         setIsApproaching(true);
       } else if (data.action === 'DIVE') {
         if (data.direction) {
-          goalkeeperEngine.manualDive(data.direction);
+          goalkeeperEngine.manualDive(data.direction); // Manual Dive trigger
         }
       }
     },
     [goalkeeperEngine, setIsApproaching]
   );
 
+  // 7. MATCH CONTROL REF ASSIGNMENT
   useEffect(() => {
     matchControlRef.current = {
+      getCurrentRole: () => currentRoleRef.current,
+
       kick: (flickData: any) => {
         if (
           currentRoleRef.current !== 'SHOOTER' ||
@@ -342,11 +240,6 @@ export function GameScene({
           isApproachingRef.current
         ) {
           return;
-        }
-
-        if (stateRef.current.autoResetTimer) {
-          clearTimeout(stateRef.current.autoResetTimer);
-          stateRef.current.autoResetTimer = null;
         }
 
         if ((gameMode as string) === 'VS_PLAYER') {
@@ -362,9 +255,7 @@ export function GameScene({
       },
 
       triggerKeeperDive: (direction: 'left' | 'right' | 'center') => {
-        if (currentRoleRef.current !== 'GOALKEEPER') {
-          return;
-        }
+        if (currentRoleRef.current !== 'GOALKEEPER') return;
 
         if ((gameMode as string) === 'VS_PLAYER') {
           tcpNetwork.send({
@@ -379,10 +270,7 @@ export function GameScene({
 
       handleRemoteAction,
 
-      reset: () => {
-        resetNextTurn();
-        triggerAIShotIfNeeded();
-      },
+      reset: () => resetNextTurn(),
 
       restartMatch: () => {
         matchManager.reset(gameMode, 5);
@@ -390,12 +278,9 @@ export function GameScene({
           updateRole(initialUserRole);
         }
         resetNextTurn();
-        triggerAIShotIfNeeded();
       },
 
-      isKicked: () => {
-        return stateRef.current.isKicked || isApproachingRef.current;
-      },
+      isKicked: () => stateRef.current.isKicked || isApproachingRef.current,
     };
   }, [
     gameMode,
@@ -406,72 +291,63 @@ export function GameScene({
     matchManager,
     resetNextTurn,
     setIsApproaching,
-    triggerAIShotIfNeeded,
     updateRole,
   ]);
 
-  /*
-   * 📡 SUBSCRIBE TO TCP & UDP MESSAGES
-   */
-// SUBSCRIBE TO TCP & UDP MESSAGES
-// SUBSCRIBE TO TCP & UDP MESSAGES
-useEffect(() => {
-  if ((gameMode as string) !== 'VS_PLAYER') return;
-
-  const unsubscribeTcp: () => void = network.onMessage((rawData: any) => {
-    try {
-      const parsed = typeof rawData === 'string' ? JSON.parse(rawData) : rawData;
-      const data = parsed?.payload || parsed?.data || parsed;
-
-      if (data?.type === 'REMOTE ACTION') {
-        handleRemoteAction(data);
-      }
-    } catch (error) {
-      console.warn('TCP Payload parse error:', error);
-    }
-  });
-
-  return () => {
-    if (typeof unsubscribeTcp === 'function') {
-      unsubscribeTcp();
-    }
-  };
-}, [gameMode, handleRemoteAction]);
-  
-
+  // 8. TCP & UDP NETWORKING LISTENERS
   useEffect(() => {
-    return () => {
-      if (aiShotTimer.current) clearTimeout(aiShotTimer.current);
-      if (stateRef.current.autoResetTimer) clearTimeout(stateRef.current.autoResetTimer);
-    };
-  }, []);
+    if ((gameMode as string) !== 'VS_PLAYER') return;
 
-  /*
-   * 🔄 GAME LOOP (R3F)
-   */
+    const unsubscribeTcp: () => void = network.onMessage((rawData: any) => {
+      try {
+        const parsed = typeof rawData === 'string' ? JSON.parse(rawData) : rawData;
+        const data = parsed?.payload || parsed?.data || parsed;
+
+        if (data?.type === 'REMOTE_ACTION') {
+          handleRemoteAction(data);
+        } else if (data?.type === 'TURN_CHANGE') {
+          const myNewRole = tcpNetwork.isHost ? data.hostRole : data.clientRole;
+          resetNextTurn(myNewRole);
+        }
+      } catch (error) {
+        console.warn('TCP Payload parse error:', error);
+      }
+    });
+
+    // UDP Listener for Receiver/Client Device Position Sync
+    udpNetwork.onSyncReceived((packet) => {
+      if (!tcpNetwork.isHost && packet) {
+        if (packet.ball?.pos) {
+          ball.position.x = packet.ball.pos.x;
+          ball.position.y = packet.ball.pos.y;
+          ball.position.z = packet.ball.pos.z;
+        }
+        if (packet.keeper?.pos) {
+          goalkeeperEngine.position.x = packet.keeper.pos.x;
+          goalkeeperEngine.position.y = packet.keeper.pos.y;
+          goalkeeperEngine.position.z = packet.keeper.pos.z;
+        }
+      }
+    });
+
+    return () => {
+      if (typeof unsubscribeTcp === 'function') unsubscribeTcp();
+      udpNetwork.onSyncReceived(null);
+    };
+  }, [ball, goalkeeperEngine, gameMode, handleRemoteAction, resetNextTurn]);
+
+  // 9. GAME LOOP (R3F FRAME UPDATE)
   useFrame((_, delta) => {
     const dt = Math.min(delta, 0.05);
 
-    // Camera updates
+    // Camera Positioning
     if (currentRoleRef.current === 'GOALKEEPER') {
       camera.position.set(0, 1.8, GOAL_Z - 2.8);
-      camera.lookAt(
-        ball.position.x * 0.5,
-        ball.position.y + 0.5,
-        ball.position.z
-      );
+      camera.lookAt(ball.position.x * 0.5, ball.position.y + 0.5, ball.position.z);
     } else {
       const cameraState = cameraManagerRef.current.update(dt, ball.position);
-      camera.position.set(
-        cameraState.position.x,
-        cameraState.position.y,
-        cameraState.position.z
-      );
-      camera.lookAt(
-        cameraState.target.x,
-        cameraState.target.y,
-        cameraState.target.z
-      );
+      camera.position.set(cameraState.position.x, cameraState.position.y, cameraState.position.z);
+      camera.lookAt(cameraState.target.x, cameraState.target.y, cameraState.target.z);
     }
 
     if ('fov' in camera) {
@@ -479,46 +355,35 @@ useEffect(() => {
       (camera as THREE.PerspectiveCamera).updateProjectionMatrix();
     }
 
-    // Physics Update Logic
-    if ((gameMode as string) !== 'VS_PLAYER' || tcpNetwork.isHost) {
-      if (stateRef.current.isKicked) {
-        ball.update(dt, sceneObjects);
-      }
+    // Engine Calculations (Physics & Motion)
+    if (stateRef.current.isKicked) {
+      ball.update(dt, sceneObjects);
+    }
+    
+    // Updates Goalkeeper's manual dive animation logic
+    goalkeeperEngine.update(dt);
 
-      if (
-        (gameMode as string) === 'VS_PLAYER' ||
-        currentRoleRef.current === 'GOALKEEPER'
-      ) {
-        goalkeeperEngine.update(dt);
-      } else {
-        goalkeeperEngine.updateAI(ball.position, ball.velocity, dt);
-      }
+    // Snapshot Transmission (Host Device only)
+    if ((gameMode as string) === 'VS_PLAYER' && tcpNetwork.isHost && clientIp) {
+      const now = Date.now();
+      if (now - lastUdpSendTime.current >= 33) { // Sync ~30 FPS
+        lastUdpSendTime.current = now;
+        currentTick.current += 1;
 
-      // UDP Snapshot Sender
-      if ((gameMode as string) === 'VS_PLAYER' && clientIp) {
-        const now = Date.now();
-        if (now - lastUdpSendTime.current >= 50) {
-          lastUdpSendTime.current = now;
-          currentTick.current += 1;
-
-          udpNetwork.sendEngineSnapshot(
-            clientIp,
-            {
-              ball: { pos: { x: ball.position.x, y: ball.position.y, z: ball.position.z } },
-              keeper: { pos: { x: goalkeeperEngine.position.x, y: goalkeeperEngine.position.y, z: goalkeeperEngine.position.z } }
-            },
-            currentTick.current
-          );
-        }
+        udpNetwork.sendEngineSnapshot(
+          clientIp,
+          {
+            ball: { pos: { x: ball.position.x, y: ball.position.y, z: ball.position.z } },
+            keeper: { pos: { x: goalkeeperEngine.position.x, y: goalkeeperEngine.position.y, z: goalkeeperEngine.position.z } },
+          },
+          currentTick.current
+        );
       }
     }
 
-    // Collision Check
+    // Goal & Collision Checks
     if (stateRef.current.isKicked) {
-      if (
-        !stateRef.current.isSaved &&
-        goalkeeperEngine.checkSave(ball.position, ball.radius)
-      ) {
+      if (!stateRef.current.isSaved && goalkeeperEngine.checkSave(ball.position, ball.radius)) {
         stateRef.current.isSaved = true;
         ball.velocity.x = (ball.position.x - goalkeeperEngine.position.x) * 3.5;
         ball.velocity.z = Math.abs(ball.velocity.z) * 0.5;
@@ -526,10 +391,8 @@ useEffect(() => {
       }
 
       const isBallPassedGoal = ball.position.z <= GOAL_Z - (NET_DEPTH - 0.2);
-      const isBallHitGroundAfterSaved =
-        stateRef.current.isSaved && ball.position.y < 0.25;
-      const isBallStopped =
-        Math.abs(ball.velocity.z) < 0.05 && Math.abs(ball.velocity.x) < 0.05;
+      const isBallHitGroundAfterSaved = stateRef.current.isSaved && ball.position.y < 0.25;
+      const isBallStopped = Math.abs(ball.velocity.z) < 0.05 && Math.abs(ball.velocity.x) < 0.05;
 
       if (
         (isBallPassedGoal || isBallHitGroundAfterSaved || isBallStopped) &&
@@ -537,37 +400,38 @@ useEffect(() => {
       ) {
         stateRef.current.shotFinished = true;
 
-        const result = matchManager.evaluateShot(
-          ball.position,
-          stateRef.current.isSaved
-        );
+        const result = matchManager.evaluateShot(ball.position, stateRef.current.isSaved);
         stateRef.current.isGoal = result.isGoal;
-
         syncScoreboard();
 
-        if (
-          !stateRef.current.autoResetTimer &&
-          !matchManager.isGameOver
-        ) {
+        if (!stateRef.current.autoResetTimer && !matchManager.isGameOver) {
           stateRef.current.autoResetTimer = setTimeout(() => {
-            resetNextTurn();
-            triggerAIShotIfNeeded();
+            if ((gameMode as string) === 'VS_PLAYER' && tcpNetwork.isHost) {
+              const nextHostRole = currentRoleRef.current === 'SHOOTER' ? 'GOALKEEPER' : 'SHOOTER';
+              const nextClientRole = nextHostRole === 'SHOOTER' ? 'GOALKEEPER' : 'SHOOTER';
+
+              tcpNetwork.send({
+                type: 'TURN_CHANGE',
+                hostRole: nextHostRole,
+                clientRole: nextClientRole,
+                round: matchManager.currentRound,
+              });
+
+              resetNextTurn(nextHostRole);
+            } else if ((gameMode as string) !== 'VS_PLAYER') {
+              resetNextTurn();
+            }
           }, 3500);
         }
       }
     }
 
-    // Render Mesh position update
+    // Render Mesh Update
     if (ballMeshRef.current) {
-      ballMeshRef.current.position.set(
-        ball.position.x,
-        ball.position.y,
-        ball.position.z
-      );
+      ballMeshRef.current.position.set(ball.position.x, ball.position.y, ball.position.z);
       if (stateRef.current.isKicked) {
         ballMeshRef.current.rotation.y += (ball.spin.y || 0) * dt;
-        ballMeshRef.current.rotation.x +=
-          ((ball.spin.x || 0) + ball.velocity.z) * dt * 0.1;
+        ballMeshRef.current.rotation.x += ((ball.spin.x || 0) + ball.velocity.z) * dt * 0.1;
       }
     }
   });
@@ -575,11 +439,7 @@ useEffect(() => {
   return (
     <>
       <ambientLight intensity={0.8} />
-      <directionalLight
-        position={[10, 25, 15]}
-        intensity={1.5}
-        castShadow
-      />
+      <directionalLight position={[10, 25, 15]} intensity={1.5} castShadow />
 
       <FootballPitch />
 
